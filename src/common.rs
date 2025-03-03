@@ -12,6 +12,7 @@ use ark_bls12_381::{Bls12_381, G1Affine};
 use ark_ec::pairing::Pairing;
 use ark_ff::field_hashers::{DefaultFieldHasher, HashToField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use base64::{prelude::BASE64_STANDARD, Engine};
 use bbs_plus::{
     setup::{KeypairG2, PublicKeyG2, SecretKey, SignatureParamsG1},
     signature::SignatureG1,
@@ -20,12 +21,13 @@ use blake2::Blake2b512;
 use chrono::{DateTime, NaiveDate, Utc};
 use legogroth16::circom::R1CS as R1CSOrig;
 use multibase::Base;
+use num_bigint::BigUint;
 use oxrdf::{
     dataset::GraphView,
     vocab::{
         self,
         rdf::{FIRST, NIL, REST, TYPE},
-        xsd::{self, DATE, DATE_TIME, INTEGER},
+        xsd::{self, BASE_64_BINARY, DATE, DATE_TIME, HEX_BINARY, INTEGER},
     },
     BlankNode, BlankNodeRef, Dataset, Graph, Literal, LiteralRef, NamedNode, NamedNodeRef,
     NamedOrBlankNode, SubjectRef, Term, TermRef, Triple, TripleRef,
@@ -294,6 +296,19 @@ pub fn hash_term_to_field(
     match term {
         TermRef::Literal(v) if v.datatype() == INTEGER => {
             let num: i64 = v.value().parse()?;
+            Ok(Fr::from(num))
+        }
+        TermRef::Literal(v) if v.datatype() == HEX_BINARY => {
+            let bytes = hex::decode(v.value())
+                .map_err(|_| RDFProofsError::InvalidHexString(v.value().to_string()))?;
+            let num = BigUint::from_bytes_le(&bytes);
+            Ok(Fr::from(num))
+        }
+        TermRef::Literal(v) if v.datatype() == BASE_64_BINARY => {
+            let bytes = BASE64_STANDARD
+                .decode(v.value())
+                .map_err(|_| RDFProofsError::InvalidBase64String(v.value().to_string()))?;
+            let num = BigUint::from_bytes_le(&bytes);
             Ok(Fr::from(num))
         }
         TermRef::Literal(v) if v.datatype() == DATE_TIME || v.datatype() == SCO_DATETIME => {

@@ -57,6 +57,8 @@ pub enum RDFProofsError {
     MissingPredicateCircuit,
     MissingSnarkVK(String),
     InvalidInteger(String),
+    InvalidHexString(String),
+    InvalidBase64String(String),
     InvalidDateTime(String),
     DateTimeParse(chrono::ParseError),
     ParseInt(std::num::ParseIntError),
@@ -202,6 +204,8 @@ impl std::fmt::Display for RDFProofsError {
                     v
                 )
             }
+            RDFProofsError::InvalidHexString(e) => write!(f, "hex parse error: {}", e),
+            RDFProofsError::InvalidBase64String(e) => write!(f, "base64 parse error: {}", e),
             RDFProofsError::DateTimeParse(e) => write!(f, "date time parse error: {}", e),
             RDFProofsError::ParseInt(e) => write!(f, "parse int error: {}", e),
             RDFProofsError::Circom(e) => write!(f, "circom error: {:?}", e),
