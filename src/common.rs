@@ -301,14 +301,14 @@ pub fn hash_term_to_field(
         TermRef::Literal(v) if v.datatype() == HEX_BINARY => {
             let bytes = hex::decode(v.value())
                 .map_err(|_| RDFProofsError::InvalidHexString(v.value().to_string()))?;
-            let num = BigUint::from_bytes_le(&bytes);
+            let num = BigUint::from_bytes_be(&bytes);
             Ok(Fr::from(num))
         }
         TermRef::Literal(v) if v.datatype() == BASE_64_BINARY => {
             let bytes = BASE64_STANDARD
                 .decode(v.value())
                 .map_err(|_| RDFProofsError::InvalidBase64String(v.value().to_string()))?;
-            let num = BigUint::from_bytes_le(&bytes);
+            let num = BigUint::from_bytes_be(&bytes);
             Ok(Fr::from(num))
         }
         TermRef::Literal(v) if v.datatype() == DATE_TIME || v.datatype() == SCO_DATETIME => {
