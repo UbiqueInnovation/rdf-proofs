@@ -29,6 +29,8 @@ use crate::{
         VerifiableCredentialTriples, VerifiablePresentation,
     },
 };
+use ark_bls12_381::Config;
+use ark_ec::bls12::Bls12;
 use ark_std::rand::RngCore;
 use chrono::offset::Utc;
 use multibase::Base;
@@ -38,7 +40,7 @@ use oxrdf::{
     QuadRef, Subject, Term, TermRef, Triple,
 };
 use proof_system::{
-    prelude::{EqualWitnesses, MetaStatements},
+    prelude::{EqualWitnesses, MetaStatement, MetaStatements},
     proof_spec::ProofSpec,
     statement::r1cs_legogroth16::R1CSCircomProver,
     witness::{Witness, Witnesses},
@@ -58,6 +60,9 @@ pub fn derive_proof<R: RngCore>(
     with_ppid: Option<bool>,
     predicates: Vec<Graph>,
     circuits: HashMap<NamedNode, Circuit>,
+    statements: Option<Statements>,
+    meta_statements: Option<MetaStatements>,
+    witnesses: Option<Witnesses<Bls12<Config>>>,
 ) -> Result<Dataset, RDFProofsError> {
     for vc in vc_pairs {
         println!("{}", vc.to_string());
@@ -267,6 +272,9 @@ pub fn derive_proof<R: RngCore>(
         predicate_graphs,
         circuits,
         &extended_deanon_map,
+        statements.unwrap_or(Statements::new()),
+        meta_statements.unwrap_or(MetaStatements::new()),
+        witnesses.unwrap_or(Witnesses::new()),
     )?;
 
     // add derived proof value to VP
@@ -297,6 +305,9 @@ pub fn derive_proof_string<R: RngCore>(
     with_ppid: Option<bool>,
     predicates: Option<&Vec<String>>,
     circuits: Option<&HashMap<String, CircuitString>>,
+    statements: Option<Statements>,
+    meta_statements: Option<MetaStatements>,
+    witnesses: Option<Witnesses<Bls12<Config>>>,
 ) -> Result<String, RDFProofsError> {
     // construct inputs for `derive_proof` from string-based inputs
     let vc_pairs = vc_pairs
@@ -358,6 +369,9 @@ pub fn derive_proof_string<R: RngCore>(
         with_ppid,
         predicates,
         circuits,
+        statements,
+        meta_statements,
+        witnesses,
     )?;
 
     Ok(rdf_canon::serialize(&derived_proof))
@@ -923,6 +937,9 @@ fn derive_proof_value<R: RngCore>(
     predicate_graphs: OrderedGraphViews,
     circuits: HashMap<NamedNode, Circuit>,
     extended_deanon_map: &HashMap<NamedOrBlankNode, Term>,
+    statements_pass: Statements,
+    meta_statements_pass: MetaStatements,
+    witnesses_pass: Witnesses<Bls12<Config>>,
 ) -> Result<String, RDFProofsError> {
     let hasher = get_hasher();
 
@@ -1114,8 +1131,6 @@ fn derive_proof_value<R: RngCore>(
 
     // build proof spec
     let context = generate_proof_spec_context(&canonicalized_vp, &index_map)?;
-    let proof_spec = ProofSpec::new(statements, meta_statements, vec![], Some(context));
-    proof_spec.validate()?;
 
     // build witnesses
     let mut witnesses = Witnesses::new();
@@ -1175,6 +1190,35 @@ fn derive_proof_value<R: RngCore>(
         witnesses.add(Witness::R1CSLegoGroth16(r1cs_wit));
     }
     println!("witnesses:\n{:#?}\n", witnesses);
+
+    // add the passed parameters
+    meta_statements.0.extend_from_slice(
+        &meta_statements_pass
+            .0
+            .iter()
+            .cloned()
+            .map(|m| match m {
+                MetaStatement::WitnessEquality(eq) => {
+                    MetaStatement::WitnessEquality(EqualWitnesses(
+                        eq.0.iter()
+                            .cloned()
+                            // "shift" the index by the amount of other statements that are added.
+                            // This is statements.len() - 1 as the pok_sig statement is always
+                            // added and already accounted for.
+                            //
+                            // Statement index 0 is reserved for pok_sig
+                            .map(|(s, w)| (if s == 0 { 0 } else { s + statements.len() - 1 }, w))
+                            .collect(),
+                    ))
+                }
+            })
+            .collect::<Vec<_>>(),
+    );
+    statements.0.extend_from_slice(&statements_pass.0);
+    witnesses.0.extend_from_slice(&witnesses_pass.0);
+
+    let proof_spec = ProofSpec::new(statements, meta_statements, vec![], Some(context));
+    proof_spec.validate()?;
 
     // build proof
     let proof = Proof::new::<R, BBSPlusHash>(
@@ -1624,6 +1668,9 @@ mod tests {
             None,
             vec![],
             HashMap::new(),
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derived_proof.vp: {}", rdf_canon::serialize(&derived_proof));
@@ -1635,6 +1682,8 @@ mod tests {
             Some(challenge),
             None,
             HashMap::new(),
+            None,
+            None,
         );
         assert!(verified.is_ok(), "{:?}", verified)
     }
@@ -1664,6 +1713,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derived_proof: {}", derived_proof);
@@ -1673,6 +1725,8 @@ mod tests {
             &derived_proof,
             KEY_GRAPH,
             Some(challenge),
+            None,
+            None,
             None,
             None,
         );
@@ -1692,6 +1746,8 @@ mod tests {
             Some(challenge),
             None,
             HashMap::new(),
+            None,
+            None,
         );
         assert!(verified.is_ok(), "{:?}", verified)
     }
@@ -1700,7 +1756,16 @@ mod tests {
     fn verify_proof_string_success() {
         let mut rng = StdRng::seed_from_u64(0u64); // TODO: to be fixed
         let challenge = "abcde";
-        let verified = verify_proof_string(&mut rng, VP, KEY_GRAPH, Some(challenge), None, None);
+        let verified = verify_proof_string(
+            &mut rng,
+            VP,
+            KEY_GRAPH,
+            Some(challenge),
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(verified.is_ok(), "{:?}", verified)
     }
 
@@ -1746,6 +1811,9 @@ mod tests {
             None,
             vec![],
             HashMap::new(),
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert!(verify_proof(
@@ -1754,7 +1822,9 @@ mod tests {
             &key_graph,
             challenge,
             domain,
-            HashMap::new()
+            HashMap::new(),
+            None,
+            None,
         )
         .is_ok());
         assert!(matches!(
@@ -1764,7 +1834,9 @@ mod tests {
                 &key_graph,
                 None,
                 domain,
-                HashMap::new()
+                HashMap::new(),
+                None,
+                None,
             ),
             Err(RDFProofsError::MissingChallengeInRequest)
         ));
@@ -1775,7 +1847,9 @@ mod tests {
                 &key_graph,
                 challenge,
                 None,
-                HashMap::new()
+                HashMap::new(),
+                None,
+                None,
             ),
             Err(RDFProofsError::MissingDomainInRequest)
         ));
@@ -1786,7 +1860,9 @@ mod tests {
                 &key_graph,
                 None,
                 None,
-                HashMap::new()
+                HashMap::new(),
+                None,
+                None,
             ),
             Err(RDFProofsError::MissingChallengeInRequest)
         ));
@@ -1803,63 +1879,9 @@ mod tests {
             None,
             vec![],
             HashMap::new(),
-        )
-        .unwrap();
-        assert!(matches!(
-            verify_proof(
-                &mut rng,
-                &derived_proof,
-                &key_graph,
-                challenge,
-                domain,
-                HashMap::new()
-            ),
-            Err(RDFProofsError::MissingChallengeInVP)
-        ));
-        assert!(verify_proof(
-            &mut rng,
-            &derived_proof,
-            &key_graph,
-            None,
-            domain,
-            HashMap::new()
-        )
-        .is_ok());
-        assert!(matches!(
-            verify_proof(
-                &mut rng,
-                &derived_proof,
-                &key_graph,
-                challenge,
-                None,
-                HashMap::new()
-            ),
-            Err(RDFProofsError::MissingChallengeInVP)
-        ));
-        assert!(matches!(
-            verify_proof(
-                &mut rng,
-                &derived_proof,
-                &key_graph,
-                None,
-                None,
-                HashMap::new()
-            ),
-            Err(RDFProofsError::MissingDomainInRequest)
-        ));
-
-        let derived_proof = derive_proof(
-            &mut rng,
-            &vcs,
-            &deanon_map,
-            &key_graph,
-            challenge,
             None,
             None,
             None,
-            None,
-            vec![],
-            HashMap::new(),
         )
         .unwrap();
         assert!(matches!(
@@ -1870,6 +1892,76 @@ mod tests {
                 challenge,
                 domain,
                 HashMap::new(),
+                None,
+                None,
+            ),
+            Err(RDFProofsError::MissingChallengeInVP)
+        ));
+        assert!(verify_proof(
+            &mut rng,
+            &derived_proof,
+            &key_graph,
+            None,
+            domain,
+            HashMap::new(),
+            None,
+            None,
+        )
+        .is_ok());
+        assert!(matches!(
+            verify_proof(
+                &mut rng,
+                &derived_proof,
+                &key_graph,
+                challenge,
+                None,
+                HashMap::new(),
+                None,
+                None,
+            ),
+            Err(RDFProofsError::MissingChallengeInVP)
+        ));
+        assert!(matches!(
+            verify_proof(
+                &mut rng,
+                &derived_proof,
+                &key_graph,
+                None,
+                None,
+                HashMap::new(),
+                None,
+                None,
+            ),
+            Err(RDFProofsError::MissingDomainInRequest)
+        ));
+
+        let derived_proof = derive_proof(
+            &mut rng,
+            &vcs,
+            &deanon_map,
+            &key_graph,
+            challenge,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            HashMap::new(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_proof(
+                &mut rng,
+                &derived_proof,
+                &key_graph,
+                challenge,
+                domain,
+                HashMap::new(),
+                None,
+                None,
             ),
             Err(RDFProofsError::MissingDomainInVP)
         ));
@@ -1880,7 +1972,9 @@ mod tests {
                 &key_graph,
                 None,
                 domain,
-                HashMap::new()
+                HashMap::new(),
+                None,
+                None,
             ),
             Err(RDFProofsError::MissingChallengeInRequest)
         ));
@@ -1890,7 +1984,9 @@ mod tests {
             &key_graph,
             challenge,
             None,
-            HashMap::new()
+            HashMap::new(),
+            None,
+            None,
         )
         .is_ok());
         assert!(matches!(
@@ -1900,7 +1996,9 @@ mod tests {
                 &key_graph,
                 None,
                 None,
-                HashMap::new()
+                HashMap::new(),
+                None,
+                None,
             ),
             Err(RDFProofsError::MissingChallengeInRequest)
         ));
@@ -1917,6 +2015,9 @@ mod tests {
             None,
             vec![],
             HashMap::new(),
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert!(matches!(
@@ -1926,7 +2027,9 @@ mod tests {
                 &key_graph,
                 challenge,
                 domain,
-                HashMap::new()
+                HashMap::new(),
+                None,
+                None,
             ),
             Err(RDFProofsError::MissingChallengeInVP)
         ));
@@ -1937,7 +2040,9 @@ mod tests {
                 &key_graph,
                 None,
                 domain,
-                HashMap::new()
+                HashMap::new(),
+                None,
+                None,
             ),
             Err(RDFProofsError::MissingDomainInVP)
         ));
@@ -1948,7 +2053,9 @@ mod tests {
                 &key_graph,
                 challenge,
                 None,
-                HashMap::new()
+                HashMap::new(),
+                None,
+                None,
             ),
             Err(RDFProofsError::MissingChallengeInVP)
         ));
@@ -1958,7 +2065,9 @@ mod tests {
             &key_graph,
             None,
             None,
-            HashMap::new()
+            HashMap::new(),
+            None,
+            None,
         )
         .is_ok());
     }
@@ -1989,22 +2098,59 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
-        assert!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, challenge, domain, None)
-                .is_ok()
-        );
+        assert!(verify_proof_string(
+            &mut rng,
+            &derived_proof,
+            KEY_GRAPH,
+            challenge,
+            domain,
+            None,
+            None,
+            None,
+        )
+        .is_ok());
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, None, domain, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                None,
+                domain,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingChallengeInRequest)
         ));
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, challenge, None, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                challenge,
+                None,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingDomainInRequest)
         ));
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, None, None, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingChallengeInRequest)
         ));
 
@@ -2020,21 +2166,59 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, challenge, domain, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                challenge,
+                domain,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingChallengeInVP)
         ));
-        assert!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, None, domain, None).is_ok()
-        );
+        assert!(verify_proof_string(
+            &mut rng,
+            &derived_proof,
+            KEY_GRAPH,
+            None,
+            domain,
+            None,
+            None,
+            None,
+        )
+        .is_ok());
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, challenge, None, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                challenge,
+                None,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingChallengeInVP)
         ));
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, None, None, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingDomainInRequest)
         ));
 
@@ -2050,21 +2234,59 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, challenge, domain, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                challenge,
+                domain,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingDomainInVP)
         ));
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, None, domain, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                None,
+                domain,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingChallengeInRequest)
         ));
-        assert!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, challenge, None, None).is_ok()
-        );
+        assert!(verify_proof_string(
+            &mut rng,
+            &derived_proof,
+            KEY_GRAPH,
+            challenge,
+            None,
+            None,
+            None,
+            None,
+        )
+        .is_ok());
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, None, None, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingChallengeInRequest)
         ));
 
@@ -2080,21 +2302,61 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, challenge, domain, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                challenge,
+                domain,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingChallengeInVP)
         ));
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, None, domain, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                None,
+                domain,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingDomainInVP)
         ));
         assert!(matches!(
-            verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, challenge, None, None),
+            verify_proof_string(
+                &mut rng,
+                &derived_proof,
+                KEY_GRAPH,
+                challenge,
+                None,
+                None,
+                None,
+                None,
+            ),
             Err(RDFProofsError::MissingChallengeInVP)
         ));
-        assert!(verify_proof_string(&mut rng, &derived_proof, KEY_GRAPH, None, None, None).is_ok());
+        assert!(verify_proof_string(
+            &mut rng,
+            &derived_proof,
+            KEY_GRAPH,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .is_ok());
     }
 
     const DISCLOSED_VC_1_WITH_HIDDEN_LITERALS: &str = r#"
@@ -2163,6 +2425,9 @@ mod tests {
             None,
             vec![],
             HashMap::new(),
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derived_proof: {}", rdf_canon::serialize(&derived_proof));
@@ -2174,6 +2439,8 @@ mod tests {
             Some(challenge),
             None,
             HashMap::new(),
+            None,
+            None,
         );
         assert!(verified.is_ok(), "{:?}", verified)
     }
@@ -2206,6 +2473,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -2214,6 +2484,8 @@ mod tests {
             &derived_proof,
             KEY_GRAPH,
             Some(challenge),
+            None,
+            None,
             None,
             None,
         );
@@ -2272,6 +2544,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             vec![],
             HashMap::new(),
+            None,
+            None,
+            None,
         );
         assert!(matches!(
             derived_proof,
@@ -2302,6 +2577,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             &deanon_map,
             KEY_GRAPH,
             Some(challenge),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -2366,6 +2644,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -2374,6 +2655,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             &derived_proof,
             KEY_GRAPH,
             Some(challenge),
+            None,
+            None,
             None,
             None,
         );
@@ -2412,6 +2695,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             None,
+            None,
+            None,
+            None,
         );
         assert!(matches!(
             derived_proof,
@@ -2445,6 +2731,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             &deanon_map,
             KEY_GRAPH,
             Some(challenge),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -2566,6 +2855,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derived_proof: {}", derived_proof);
@@ -2575,6 +2867,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             &derived_proof,
             KEY_GRAPH,
             Some(challenge),
+            None,
+            None,
             None,
             None,
         );
@@ -2657,6 +2951,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             None,
+            None,
+            None,
+            None,
         );
         assert!(derived_proof.is_err(), "{:?}", derived_proof)
     }
@@ -2715,6 +3012,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -2723,6 +3023,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             &derived_proof,
             KEY_GRAPH,
             Some(challenge),
+            None,
+            None,
             None,
             None,
         );
@@ -2750,6 +3052,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -2758,6 +3063,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             &derived_proof,
             KEY_GRAPH,
             Some(challenge),
+            None,
+            None,
             None,
             None,
         );
@@ -2797,6 +3104,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             Some(true),
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derived_proof:\n{}", derived_proof);
@@ -2807,6 +3117,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             KEY_GRAPH,
             Some(challenge),
             Some(domain),
+            None,
+            None,
             None,
         );
         assert!(verified.is_ok(), "{:?}", verified)
@@ -2833,6 +3145,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             Some(true),
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derived_proof:\n{}", derived_proof);
@@ -2843,6 +3158,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             KEY_GRAPH,
             Some(challenge),
             Some(domain),
+            None,
+            None,
             None,
         );
         assert!(verified.is_ok(), "{:?}", verified)
@@ -2867,6 +3184,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             Some(secret),
             None,
             Some(false),
+            None,
+            None,
+            None,
             None,
             None,
         );
@@ -2910,6 +3230,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             Some(true),
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -2919,6 +3242,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             KEY_GRAPH,
             Some(challenge),
             Some(domain),
+            None,
+            None,
             None,
         );
         assert!(verified.is_ok(), "{:?}", verified)
@@ -3033,6 +3358,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             Some(&predicates),
             Some(&circuit),
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derive_proof: {}", derived_proof);
@@ -3049,6 +3377,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             Some(snark_verifying_keys.clone()),
+            None,
+            None,
         );
         assert!(verified.is_ok(), "{:?}", verified);
 
@@ -3083,6 +3413,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             Some(&predicates_same_datetime),
             Some(&circuit),
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derive_proof: {}", derived_proof);
@@ -3093,6 +3426,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             Some(snark_verifying_keys),
+            None,
+            None,
         );
         assert!(matches!(
             verified,
@@ -3175,6 +3510,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             Some(&predicates),
             Some(&circuit),
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derive_proof: {}", derived_proof);
@@ -3191,6 +3529,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             Some(snark_verifying_keys.clone()),
+            None,
+            None,
         );
         assert!(verified.is_ok(), "{:?}", verified);
 
@@ -3225,6 +3565,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             Some(&predicates_lesser_datetime),
             Some(&circuit),
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derive_proof: {}", derived_proof);
@@ -3235,6 +3578,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             Some(snark_verifying_keys),
+            None,
+            None,
         );
         assert!(matches!(
             verified,
@@ -3369,6 +3714,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             Some(&predicates),
             Some(&circuit),
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derive_proof: {}", derived_proof);
@@ -3385,6 +3733,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             Some(snark_verifying_keys.clone()),
+            None,
+            None,
         );
         assert!(verified.is_ok(), "{:?}", verified);
 
@@ -3419,6 +3769,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             Some(&predicates_lesser_datetime),
             Some(&circuit),
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derive_proof: {}", derived_proof);
@@ -3429,6 +3782,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             Some(snark_verifying_keys),
+            None,
+            None,
         );
         assert!(matches!(
             verified,
@@ -3559,6 +3914,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             Some(&predicates),
             Some(&circuit),
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derive_proof: {}", derived_proof);
@@ -3575,6 +3933,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             Some(snark_verifying_keys.clone()),
+            None,
+            None,
         );
         assert!(verified.is_ok(), "{:?}", verified);
 
@@ -3610,6 +3970,9 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             Some(&predicates_same_integer),
             Some(&circuit),
+            None,
+            None,
+            None,
         )
         .unwrap();
         println!("derive_proof: {}", derived_proof);
@@ -3620,6 +3983,8 @@ _:b1 <http://schema.org/name> "ABC inc." .
             None,
             None,
             Some(snark_verifying_keys),
+            None,
+            None,
         );
         assert!(matches!(
             verified,

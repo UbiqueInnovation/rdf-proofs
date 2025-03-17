@@ -8,7 +8,7 @@ pub mod key_gen;
 mod key_graph;
 mod ordered_triple;
 mod predicate;
-mod signature;
+pub mod signature;
 mod vc;
 mod verify_proof;
 
