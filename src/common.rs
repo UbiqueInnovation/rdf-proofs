@@ -10,7 +10,11 @@ use crate::{
 };
 use ark_bls12_381::{Bls12_381, G1Affine};
 use ark_ec::pairing::Pairing;
-use ark_ff::field_hashers::{DefaultFieldHasher, HashToField};
+use ark_ff::PrimeField;
+use ark_ff::{
+    field_hashers::{DefaultFieldHasher, HashToField},
+    BigInt,
+};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use base64::{prelude::BASE64_STANDARD, Engine};
 use bbs_plus::{
@@ -21,13 +25,12 @@ use blake2::Blake2b512;
 use chrono::{DateTime, NaiveDate, Utc};
 use legogroth16::circom::R1CS as R1CSOrig;
 use multibase::Base;
-use num_bigint::BigUint;
 use oxrdf::{
     dataset::GraphView,
     vocab::{
         self,
         rdf::{FIRST, NIL, REST, TYPE},
-        xsd::{self, BASE_64_BINARY, DATE, DATE_TIME, HEX_BINARY, INTEGER},
+        xsd::{self, DATE, DATE_TIME, INTEGER},
     },
     BlankNode, BlankNodeRef, Dataset, Graph, Literal, LiteralRef, NamedNode, NamedNodeRef,
     NamedOrBlankNode, SubjectRef, Term, TermRef, Triple, TripleRef,
@@ -288,6 +291,15 @@ pub fn hash_terms_to_field(
         .collect()
 }
 
+fn from_bytes_le(bytes: Vec<u8>) -> Vec<u64> {
+    assert!(bytes.len() % 8 == 0, "Byte length must be a multiple of 8");
+
+    bytes
+        .chunks_exact(8)
+        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+        .collect()
+}
+
 pub fn hash_term_to_field(
     term: TermRef,
     hasher: &BBSPlusDefaultFieldHasher,
@@ -298,18 +310,24 @@ pub fn hash_term_to_field(
             let num: i64 = v.value().parse()?;
             Ok(Fr::from(num))
         }
-        TermRef::Literal(v) if v.datatype() == HEX_BINARY => {
-            let bytes = hex::decode(v.value())
-                .map_err(|_| RDFProofsError::InvalidHexString(v.value().to_string()))?;
-            let num = BigUint::from_bytes_be(&bytes);
-            Ok(Fr::from(num))
+        TermRef::Literal(v) if v.datatype() == custom_vocab::BASE_64_BYTES_BE => {
+            let mut bytes = BASE64_STANDARD
+                .decode(v.value())
+                .map_err(|_| RDFProofsError::InvalidBase64String(v.value().to_string()))?;
+            bytes.reverse();
+            let num = BigInt::<4>::new(from_bytes_le(bytes).try_into().unwrap());
+            let fr = Fr::from(num);
+
+            Ok(fr)
         }
-        TermRef::Literal(v) if v.datatype() == BASE_64_BINARY => {
+        TermRef::Literal(v) if v.datatype() == custom_vocab::BASE_64_BYTES_LE => {
             let bytes = BASE64_STANDARD
                 .decode(v.value())
                 .map_err(|_| RDFProofsError::InvalidBase64String(v.value().to_string()))?;
-            let num = BigUint::from_bytes_be(&bytes);
-            Ok(Fr::from(num))
+
+            let num = BigInt::<4>::new(from_bytes_le(bytes).try_into().unwrap());
+            let fr = Fr::from_bigint(num).unwrap();
+            Ok(fr)
         }
         TermRef::Literal(v) if v.datatype() == DATE_TIME || v.datatype() == SCO_DATETIME => {
             let datetime: DateTime<Utc> = v.value().parse()?;
@@ -658,6 +676,11 @@ pub(crate) fn read_public_var_list(
         Some(TermRef::NamedNode(rest)) if rest == NIL => Ok(()),
         _ => Err(RDFProofsError::InvalidPredicate),
     }
+}
+
+pub mod custom_vocab {
+    pub const BASE_64_BYTES_BE: &str = "http://www.w3.org/2001/XMLSchema#base64BytesBe";
+    pub const BASE_64_BYTES_LE: &str = "http://www.w3.org/2001/XMLSchema#base64BytesLe";
 }
 
 #[cfg(test)]
