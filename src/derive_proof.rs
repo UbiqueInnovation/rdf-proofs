@@ -251,6 +251,19 @@ pub fn derive_proof<R: RngCore>(
         );
     }
 
+    // vc reorder map
+    let vc_reorder_map = {
+        let mut map = BTreeMap::<usize, usize>::new();
+        for (orig_i, vc) in canonicalized_original_vcs.iter().enumerate() {
+            let sort_i = original_vc_vec
+                .iter()
+                .position(|v| Graph::from_iter(v.document.iter().cloned()) == vc.document)
+                .ok_or(RDFProofsError::MalformedProof)?;
+            map.insert(orig_i, sort_i);
+        }
+        map
+    };
+
     // generate index map
     let index_map = gen_index_map(&original_vc_vec, &disclosed_vc_vec, &extended_deanon_map)?;
     println!("index_map:\n{:#?}\n", index_map);
@@ -265,6 +278,7 @@ pub fn derive_proof<R: RngCore>(
         public_keys,
         vc_proof_values_vec,
         index_map,
+        vc_reorder_map,
         &vp_draft,
         challenge,
         &blind_sign_request,
@@ -930,6 +944,7 @@ fn derive_proof_value<R: RngCore>(
     public_keys: Vec<BBSPlusPublicKey>,
     proof_values: Vec<String>,
     index_map: Vec<StatementIndexMap>,
+    vc_reorder_map: BTreeMap<usize, usize>,
     canonicalized_vp: &Dataset,
     challenge: Option<&str>,
     blind_sign_request: &Option<BlindSignRequest>,
@@ -1010,6 +1025,7 @@ fn derive_proof_value<R: RngCore>(
 
     // build statements
     let mut statements = Statements::new();
+
     // statements for BBS+ signatures
     for (DisclosedAndUndisclosedTerms { disclosed, .. }, (params, _public_key)) in
         disclosed_and_undisclosed_terms.iter().zip(params_and_pks)
@@ -1019,6 +1035,8 @@ fn derive_proof_value<R: RngCore>(
             disclosed.clone(),
         ));
     }
+    let num_sigs = statements.len();
+
     // statement for PPID
     let mut ppid_index = None;
     if let Some(ppid) = ppid {
@@ -1207,7 +1225,16 @@ fn derive_proof_value<R: RngCore>(
                             // added and already accounted for.
                             //
                             // Statement index 0 is reserved for pok_sig
-                            .map(|(s, w)| (if s == 0 { 0 } else { s + statements.len() - 1 }, w))
+                            .map(|(s, w)| {
+                                (
+                                    if s < num_sigs {
+                                        vc_reorder_map[&s]
+                                    } else {
+                                        s + statements.len() - num_sigs
+                                    },
+                                    w,
+                                )
+                            })
                             .collect(),
                     ))
                 }

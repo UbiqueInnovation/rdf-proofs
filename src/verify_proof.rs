@@ -200,6 +200,7 @@ pub fn verify_proof<R: RngCore>(
             disclosed.clone(),
         ));
     }
+    let num_sigs = statements.len();
     // statement for PPID
     let mut ppid_index = None;
     if let Some(ppid) = ppid {
@@ -340,7 +341,14 @@ pub fn verify_proof<R: RngCore>(
                                 //
                                 // Statement index 0 is reserved for pok_sig
                                 .map(|(s, w)| {
-                                    (if s == 0 { 0 } else { s + statements.len() - 1 }, w)
+                                    (
+                                        if s < num_sigs {
+                                            s
+                                        } else {
+                                            s + statements.len() - num_sigs
+                                        },
+                                        w,
+                                    )
                                 })
                                 .collect(),
                         ))
