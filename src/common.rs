@@ -13,7 +13,6 @@ use ark_ec::pairing::Pairing;
 use ark_ff::PrimeField;
 use ark_ff::{
     field_hashers::{DefaultFieldHasher, HashToField},
-    BigInt,
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use base64::{prelude::BASE64_STANDARD, Engine};
@@ -291,15 +290,6 @@ pub fn hash_terms_to_field(
         .collect()
 }
 
-fn from_bytes_le(bytes: Vec<u8>) -> Vec<u64> {
-    assert!(bytes.len() % 8 == 0, "Byte length must be a multiple of 8");
-
-    bytes
-        .chunks_exact(8)
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
-        .collect()
-}
-
 pub fn hash_term_to_field(
     term: TermRef,
     hasher: &BBSPlusDefaultFieldHasher,
@@ -315,19 +305,14 @@ pub fn hash_term_to_field(
                 .decode(v.value())
                 .map_err(|_| RDFProofsError::InvalidBase64String(v.value().to_string()))?;
             bytes.reverse();
-            let num = BigInt::<4>::new(from_bytes_le(bytes).try_into().unwrap());
-            let fr = Fr::from(num);
-
-            Ok(fr)
+            Ok(Fr::from_le_bytes_mod_order(&bytes))
         }
         TermRef::Literal(v) if v.datatype() == custom_vocab::BASE_64_BYTES_LE => {
             let bytes = BASE64_STANDARD
                 .decode(v.value())
                 .map_err(|_| RDFProofsError::InvalidBase64String(v.value().to_string()))?;
 
-            let num = BigInt::<4>::new(from_bytes_le(bytes).try_into().unwrap());
-            let fr = Fr::from_bigint(num).unwrap();
-            Ok(fr)
+            Ok(Fr::from_le_bytes_mod_order(&bytes))
         }
         TermRef::Literal(v) if v.datatype() == DATE_TIME || v.datatype() == SCO_DATETIME => {
             let datetime: DateTime<Utc> = v.value().parse()?;
@@ -685,8 +670,9 @@ pub mod custom_vocab {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_hasher, hash_term_to_field, Fr};
-    use ark_ff::BigInt;
+    use super::{custom_vocab, get_hasher, hash_term_to_field, Fr};
+    use ark_ff::{BigInt, PrimeField};
+    use base64::{engine::general_purpose::STANDARD, Engine};
     use oxrdf::{
         vocab::xsd::{DATE, DATE_TIME, INTEGER},
         LiteralRef, NamedNodeRef, TermRef,
@@ -801,5 +787,37 @@ mod tests {
             ),
             Err(crate::error::RDFProofsError::DateTimeParse(_))
         ));
+    }
+
+    #[test]
+    fn hash_large_base64_bytes() {
+        let hasher = get_hasher();
+        let bytes = vec![u8::MAX; 32];
+        let value = STANDARD.encode(&bytes);
+        let term = LiteralRef::new_typed_literal(
+            &value,
+            NamedNodeRef::new_unchecked(custom_vocab::BASE_64_BYTES_BE),
+        );
+
+        assert_eq!(
+            hash_term_to_field(term.into(), &hasher).unwrap(),
+            Fr::from_le_bytes_mod_order(&bytes),
+        );
+    }
+
+    #[test]
+    fn hash_large_base64_bytes_le() {
+        let hasher = get_hasher();
+        let bytes = vec![u8::MAX; 32];
+        let value = STANDARD.encode(&bytes);
+        let term = LiteralRef::new_typed_literal(
+            &value,
+            NamedNodeRef::new_unchecked(custom_vocab::BASE_64_BYTES_LE),
+        );
+
+        assert_eq!(
+            hash_term_to_field(term.into(), &hasher).unwrap(),
+            Fr::from_le_bytes_mod_order(&bytes),
+        );
     }
 }
