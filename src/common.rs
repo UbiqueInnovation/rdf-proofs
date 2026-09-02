@@ -10,10 +10,8 @@ use crate::{
 };
 use ark_bls12_381::{Bls12_381, G1Affine};
 use ark_ec::pairing::Pairing;
-use ark_ff::PrimeField;
-use ark_ff::{
-    field_hashers::{DefaultFieldHasher, HashToField},
-};
+use ark_ff::field_hashers::{DefaultFieldHasher, HashToField};
+use ark_ff::{BigInt, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use base64::{prelude::BASE64_STANDARD, Engine};
 use bbs_plus::{
@@ -24,6 +22,7 @@ use blake2::Blake2b512;
 use chrono::{DateTime, NaiveDate, Utc};
 use legogroth16::circom::R1CS as R1CSOrig;
 use multibase::Base;
+use num_bigint::BigUint;
 use oxrdf::{
     dataset::GraphView,
     vocab::{
@@ -305,14 +304,14 @@ pub fn hash_term_to_field(
                 .decode(v.value())
                 .map_err(|_| RDFProofsError::InvalidBase64String(v.value().to_string()))?;
             bytes.reverse();
-            Ok(Fr::from_le_bytes_mod_order(&bytes))
+            base64_bytes_to_field(&bytes, v.value())
         }
         TermRef::Literal(v) if v.datatype() == custom_vocab::BASE_64_BYTES_LE => {
             let bytes = BASE64_STANDARD
                 .decode(v.value())
                 .map_err(|_| RDFProofsError::InvalidBase64String(v.value().to_string()))?;
 
-            Ok(Fr::from_le_bytes_mod_order(&bytes))
+            base64_bytes_to_field(&bytes, v.value())
         }
         TermRef::Literal(v) if v.datatype() == DATE_TIME || v.datatype() == SCO_DATETIME => {
             let datetime: DateTime<Utc> = v.value().parse()?;
@@ -334,6 +333,13 @@ pub fn hash_term_to_field(
             .pop()
             .ok_or(RDFProofsError::HashToField),
     }
+}
+
+fn base64_bytes_to_field(bytes: &[u8], value: &str) -> Result<Fr, RDFProofsError> {
+    let bigint = BigInt::<4>::try_from(BigUint::from_bytes_le(bytes))
+        .map_err(|_| RDFProofsError::Base64ValueTooLarge(value.to_string()))?;
+
+    Fr::from_bigint(bigint).ok_or_else(|| RDFProofsError::Base64ValueTooLarge(value.to_string()))
 }
 
 pub fn hash_byte_to_field(
@@ -671,7 +677,7 @@ pub mod custom_vocab {
 #[cfg(test)]
 mod tests {
     use super::{custom_vocab, get_hasher, hash_term_to_field, Fr};
-    use ark_ff::{BigInt, PrimeField};
+    use ark_ff::BigInt;
     use base64::{engine::general_purpose::STANDARD, Engine};
     use oxrdf::{
         vocab::xsd::{DATE, DATE_TIME, INTEGER},
@@ -790,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_large_base64_bytes() {
+    fn reject_large_base64_bytes() {
         let hasher = get_hasher();
         let bytes = vec![u8::MAX; 32];
         let value = STANDARD.encode(&bytes);
@@ -799,14 +805,14 @@ mod tests {
             NamedNodeRef::new_unchecked(custom_vocab::BASE_64_BYTES_BE),
         );
 
-        assert_eq!(
-            hash_term_to_field(term.into(), &hasher).unwrap(),
-            Fr::from_le_bytes_mod_order(&bytes),
-        );
+        assert!(matches!(
+            hash_term_to_field(term.into(), &hasher),
+            Err(crate::error::RDFProofsError::Base64ValueTooLarge(_))
+        ));
     }
 
     #[test]
-    fn hash_large_base64_bytes_le() {
+    fn reject_large_base64_bytes_le() {
         let hasher = get_hasher();
         let bytes = vec![u8::MAX; 32];
         let value = STANDARD.encode(&bytes);
@@ -815,9 +821,9 @@ mod tests {
             NamedNodeRef::new_unchecked(custom_vocab::BASE_64_BYTES_LE),
         );
 
-        assert_eq!(
-            hash_term_to_field(term.into(), &hasher).unwrap(),
-            Fr::from_le_bytes_mod_order(&bytes),
-        );
+        assert!(matches!(
+            hash_term_to_field(term.into(), &hasher),
+            Err(crate::error::RDFProofsError::Base64ValueTooLarge(_))
+        ));
     }
 }
